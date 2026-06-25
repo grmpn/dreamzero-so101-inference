@@ -16,9 +16,9 @@ from offline_inference import (  # noqa: E402
     save_actions,
     save_frames,
 )
+from path_utils import PROJECT_ROOT  # noqa: E402
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STATS_PATH = PROJECT_ROOT / "data" / "so101-megamix-v1" / "meta" / "stats.json"
 
 

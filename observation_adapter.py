@@ -20,7 +20,9 @@ import torch
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from path_utils import PROJECT_ROOT, project_path  # noqa: E402
+
+
 DEFAULT_STATS_PATH = PROJECT_ROOT / "data" / "so101-megamix-v1" / "meta" / "stats.json"
 DEFAULT_INFO_PATH = PROJECT_ROOT / "data" / "so101-megamix-v1" / "meta" / "info.json"
 DEFAULT_TOKENIZER_PATH = PROJECT_ROOT / "checkpoints" / "umt5-xxl"
@@ -69,9 +71,9 @@ class SO101ObservationAdapter:
         action_seed: int = 1140,
         tokenizer: PreTrainedTokenizerBase | None = None,
     ) -> None:
-        self.stats_path = Path(stats_path).expanduser().resolve()
-        self.info_path = Path(info_path).expanduser().resolve()
-        self.tokenizer_path = Path(tokenizer_path).expanduser().resolve()
+        self.stats_path = project_path(stats_path)
+        self.info_path = project_path(info_path)
+        self.tokenizer_path = project_path(tokenizer_path)
         self.camera_height = camera_height
         self.camera_width = camera_width
         self.max_length = max_length

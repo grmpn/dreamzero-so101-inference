@@ -20,7 +20,7 @@
       "diffusion_model_cfg": {
         "_convert_": "object",
         "_target_": "groot.vla.model.dreamzero.modules.wan_video_dit_action_casual_chunk.CausalWanModel",
-        "diffusion_model_pretrained_path": "/home/qwinkler/dev/dreamzero-so101-inference/checkpoints/Wan2.1-I2V-14B-480P",
+        "diffusion_model_pretrained_path": "checkpoints/Wan2.1-I2V-14B-480P",
         "dim": 5120,
         "eps": 1e-06,
         "ffn_dim": 13824,
@@ -42,7 +42,7 @@
       "image_encoder_cfg": {
         "_convert_": "object",
         "_target_": "groot.vla.model.dreamzero.modules.wan_video_image_encoder.WanImageEncoder",
-        "image_encoder_pretrained_path": "/home/qwinkler/dev/dreamzero-so101-inference/checkpoints/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"
+        "image_encoder_pretrained_path": "checkpoints/Wan2.1-I2V-14B-480P/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"
       },
       "init_lora_weights": "kaiming",
       "input_embedding_dim": 1536,
@@ -65,7 +65,7 @@
       "text_encoder_cfg": {
         "_convert_": "object",
         "_target_": "groot.vla.model.dreamzero.modules.wan_video_text_encoder.WanTextEncoder",
-        "text_encoder_pretrained_path": "/home/qwinkler/dev/dreamzero-so101-inference/checkpoints/Wan2.1-I2V-14B-480P/models_t5_umt5-xxl-enc-bf16.pth"
+        "text_encoder_pretrained_path": "checkpoints/Wan2.1-I2V-14B-480P/models_t5_umt5-xxl-enc-bf16.pth"
       },
       "tile_size_height": 34,
       "tile_size_width": 34,
@@ -80,7 +80,7 @@
       "vae_cfg": {
         "_convert_": "object",
         "_target_": "groot.vla.model.dreamzero.modules.wan_video_vae.WanVideoVAE",
-        "vae_pretrained_path": "/home/qwinkler/dev/dreamzero-so101-inference/checkpoints/Wan2.1-I2V-14B-480P/Wan2.1_VAE.pth"
+        "vae_pretrained_path": "checkpoints/Wan2.1-I2V-14B-480P/Wan2.1_VAE.pth"
       },
       "video_noise_beta_alpha": 3.0,
       "video_noise_beta_beta": 1.0,
@@ -105,7 +105,7 @@
   "hidden_size": 0,
   "model_dtype": "float32",
   "model_type": "vla",
-  "resume_path": "/home/qwinkler/dev/dreamzero-so101-inference/checkpoints/dreamzero-so101-lora",
+  "resume_path": "checkpoints/dreamzero-so101-lora",
   "torch_dtype": "bfloat16",
   "transformers_version": "4.51.3"
 }

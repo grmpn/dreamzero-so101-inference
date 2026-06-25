@@ -24,9 +24,15 @@ from safetensors.torch import load_file
 from torch.nn.modules.module import _IncompatibleKeys
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DREAMZERO_ROOT = PROJECT_ROOT / "dreamzero"
-DEFAULT_CONFIG = PROJECT_ROOT / "checkpoints" / "dreamzero-so101-lora" / "config.json"
+from path_utils import (  # noqa: E402
+    DREAMZERO_ROOT,
+    PROJECT_ROOT,
+    default_config_path,
+    project_path,
+)
+
+
+DEFAULT_CONFIG = default_config_path()
 DEFAULT_CHECKPOINT = (
     PROJECT_ROOT / "checkpoints" / "dreamzero-so101-lora" / "model.safetensors"
 )
@@ -66,12 +72,33 @@ def parse_args() -> argparse.Namespace:
 def _configured_asset_paths(cfg: DictConfig) -> dict[str, Path]:
     head = cfg.action_head_cfg.config
     return {
-        "Wan2.1 directory": Path(head.diffusion_model_cfg.diffusion_model_pretrained_path),
-        "UMT5 encoder": Path(head.text_encoder_cfg.text_encoder_pretrained_path),
-        "CLIP image encoder": Path(head.image_encoder_cfg.image_encoder_pretrained_path),
-        "Wan VAE": Path(head.vae_cfg.vae_pretrained_path),
-        "DreamZero checkpoint": Path(cfg.resume_path) / "model.safetensors",
+        "Wan2.1 directory": project_path(head.diffusion_model_cfg.diffusion_model_pretrained_path),
+        "UMT5 encoder": project_path(head.text_encoder_cfg.text_encoder_pretrained_path),
+        "CLIP image encoder": project_path(head.image_encoder_cfg.image_encoder_pretrained_path),
+        "Wan VAE": project_path(head.vae_cfg.vae_pretrained_path),
+        "DreamZero checkpoint": project_path(cfg.resume_path) / "model.safetensors",
     }
+
+
+def resolve_config_paths(cfg: DictConfig) -> None:
+    """Resolve relative config asset paths before Hydra instantiation."""
+
+    head = cfg.action_head_cfg.config
+    head.diffusion_model_cfg.diffusion_model_pretrained_path = str(
+        project_path(head.diffusion_model_cfg.diffusion_model_pretrained_path)
+    )
+    head.text_encoder_cfg.text_encoder_pretrained_path = str(
+        project_path(head.text_encoder_cfg.text_encoder_pretrained_path)
+    )
+    head.image_encoder_cfg.image_encoder_pretrained_path = str(
+        project_path(head.image_encoder_cfg.image_encoder_pretrained_path)
+    )
+    head.vae_cfg.vae_pretrained_path = str(project_path(head.vae_cfg.vae_pretrained_path))
+    if cfg.get("resume_path") is not None:
+        cfg.resume_path = str(project_path(cfg.resume_path))
+    decode_path = head.get("load_pretrained_det_decode_layer_path")
+    if decode_path is not None:
+        head.load_pretrained_det_decode_layer_path = str(project_path(decode_path))
 
 
 def validate_local_assets(cfg: DictConfig, checkpoint: Path) -> None:
@@ -222,9 +249,10 @@ def print_parameter_preview(policy_head: torch.nn.Module, limit: int) -> None:
 
 def main() -> None:
     args = parse_args()
-    config_path = args.config.expanduser().resolve()
-    checkpoint_path = args.checkpoint.expanduser().resolve()
+    config_path = project_path(args.config)
+    checkpoint_path = project_path(args.checkpoint)
     cfg = OmegaConf.load(config_path)
+    resolve_config_paths(cfg)
     validate_local_assets(cfg, checkpoint_path)
 
     if args.mode == "meta":

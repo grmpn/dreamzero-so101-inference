@@ -27,9 +27,15 @@ import torch
 from transformers.feature_extraction_utils import BatchFeature
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DREAMZERO_ROOT = PROJECT_ROOT / "dreamzero"
-DEFAULT_CONFIG = PROJECT_ROOT / "checkpoints" / "dreamzero-so101-lora" / "config.json"
+from path_utils import (  # noqa: E402
+    DREAMZERO_ROOT,
+    PROJECT_ROOT,
+    default_config_path,
+    project_path,
+)
+
+
+DEFAULT_CONFIG = default_config_path()
 DEFAULT_LORA = PROJECT_ROOT / "checkpoints" / "dreamzero-so101-lora" / "model.safetensors"
 DEFAULT_STATS = PROJECT_ROOT / "data" / "so101-megamix-v1" / "meta" / "stats.json"
 DEFAULT_INFO = PROJECT_ROOT / "data" / "so101-megamix-v1" / "meta" / "info.json"
@@ -96,7 +102,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_lora_path(path: str | Path) -> Path:
-    resolved = Path(path).expanduser().resolve()
+    resolved = project_path(path)
     if resolved.is_dir():
         resolved = resolved / "model.safetensors"
     if not resolved.is_file():
@@ -105,7 +111,7 @@ def resolve_lora_path(path: str | Path) -> Path:
 
 
 def patch_base_model_paths(cfg: DictConfig, base_model_path: str | Path) -> None:
-    base = Path(base_model_path).expanduser().resolve()
+    base = project_path(base_model_path)
     if not base.is_dir():
         raise FileNotFoundError(f"Wan2.1 directory not found: {base}")
     head = cfg.action_head_cfg.config
@@ -117,6 +123,27 @@ def patch_base_model_paths(cfg: DictConfig, base_model_path: str | Path) -> None
         base / "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"
     )
     head.vae_cfg.vae_pretrained_path = str(base / "Wan2.1_VAE.pth")
+
+
+def resolve_config_paths(cfg: DictConfig) -> None:
+    """Resolve relative config asset paths for Docker/container portability."""
+
+    head = cfg.action_head_cfg.config
+    head.diffusion_model_cfg.diffusion_model_pretrained_path = str(
+        project_path(head.diffusion_model_cfg.diffusion_model_pretrained_path)
+    )
+    head.text_encoder_cfg.text_encoder_pretrained_path = str(
+        project_path(head.text_encoder_cfg.text_encoder_pretrained_path)
+    )
+    head.image_encoder_cfg.image_encoder_pretrained_path = str(
+        project_path(head.image_encoder_cfg.image_encoder_pretrained_path)
+    )
+    head.vae_cfg.vae_pretrained_path = str(project_path(head.vae_cfg.vae_pretrained_path))
+    if cfg.get("resume_path") is not None:
+        cfg.resume_path = str(project_path(cfg.resume_path))
+    decode_path = head.get("load_pretrained_det_decode_layer_path")
+    if decode_path is not None:
+        head.load_pretrained_det_decode_layer_path = str(project_path(decode_path))
 
 
 def checkpoint_state_for_action_head(checkpoint: str | Path) -> dict[str, torch.Tensor]:
@@ -144,12 +171,13 @@ def load_policy_head(
 
     from hydra.utils import instantiate
 
-    config_path = Path(config_path).expanduser().resolve()
+    config_path = project_path(config_path)
     if not config_path.is_file():
         raise FileNotFoundError(f"Config not found: {config_path}")
     cfg = OmegaConf.load(config_path)
     if base_model_path is not None:
         patch_base_model_paths(cfg, base_model_path)
+    resolve_config_paths(cfg)
 
     print("Instantiating DreamZero action head and loading Wan2.1 components...")
     policy_head = instantiate(cfg.action_head_cfg)
@@ -215,7 +243,7 @@ def move_model_inputs(
 
 
 def load_action_statistics(stats_path: str | Path) -> tuple[torch.Tensor, torch.Tensor]:
-    path = Path(stats_path).expanduser().resolve()
+    path = project_path(stats_path)
     with path.open() as stats_file:
         stats = json.load(stats_file)
     if "action" not in stats:
