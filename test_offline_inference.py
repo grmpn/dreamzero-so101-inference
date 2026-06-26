@@ -11,10 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from observation_adapter import JOINT_NAMES  # noqa: E402
 from offline_inference import (  # noqa: E402
+    concatenate_rollout_frames,
     denormalize_actions,
     load_action_statistics,
     save_actions,
     save_frames,
+    split_mosaic_frame,
 )
 from path_utils import PROJECT_ROOT  # noqa: E402
 
@@ -57,6 +59,31 @@ class OfflineInferenceHelpersTest(unittest.TestCase):
             for camera in ("front", "top", "gripper"):
                 camera_paths = sorted((output_dir / "frames" / camera).glob("*.png"))
                 self.assertEqual(len(camera_paths), 9)
+
+    def test_rollout_frame_concatenation_drops_repeated_conditioning_frames(self) -> None:
+        first = np.zeros((3, 4, 6, 3), dtype=np.uint8)
+        second = np.ones((3, 4, 6, 3), dtype=np.uint8)
+        third = np.full((3, 4, 6, 3), 2, dtype=np.uint8)
+
+        combined = concatenate_rollout_frames([first, second, third])
+
+        self.assertEqual(combined.shape, (7, 4, 6, 3))
+        np.testing.assert_array_equal(combined[:3], first)
+        np.testing.assert_array_equal(combined[3:5], second[1:])
+        np.testing.assert_array_equal(combined[5:], third[1:])
+
+    def test_mosaic_frame_split(self) -> None:
+        frame = np.zeros((4, 6, 3), dtype=np.uint8)
+        frame[:2, :3] = (10, 20, 30)
+        frame[:2, 3:] = (40, 50, 60)
+        frame[2:, :3] = (70, 80, 90)
+
+        cameras = split_mosaic_frame(frame)
+
+        self.assertEqual(set(cameras), {"front", "top", "gripper"})
+        np.testing.assert_array_equal(cameras["front"], frame[:2, :3])
+        np.testing.assert_array_equal(cameras["top"], frame[:2, 3:])
+        np.testing.assert_array_equal(cameras["gripper"], frame[2:, :3])
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Sequence
 
 import imageio.v2 as imageio
 import numpy as np
@@ -82,6 +82,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--info-path", type=Path, default=DEFAULT_INFO)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--action-seed", type=int, default=1140)
+    parser.add_argument(
+        "--num-chunks",
+        type=int,
+        default=1,
+        help=(
+            "number of 24-action chunks to generate; chunks after the first are "
+            "conditioned on the previous chunk's final predicted frame and action"
+        ),
+    )
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
         "--attention-backend",
@@ -99,6 +108,11 @@ def parse_args() -> argparse.Namespace:
         help="write PNG frames only",
     )
     return parser.parse_args()
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    if args.num_chunks < 1:
+        raise ValueError("--num-chunks must be at least 1")
 
 
 def resolve_lora_path(path: str | Path) -> Path:
@@ -294,6 +308,48 @@ def decode_video_frames(
     return ((frames.float() + 1.0) * 127.5).clamp(0, 255).byte().cpu().numpy()
 
 
+def split_mosaic_frame(frame: np.ndarray) -> dict[str, np.ndarray]:
+    """Split a decoded 2x2 SO-101 mosaic frame back into camera quadrants."""
+
+    if frame.ndim != 3 or frame.shape[-1] != 3:
+        raise ValueError(f"Expected mosaic frame [H,W,3], got {frame.shape}")
+    height, width = frame.shape[:2]
+    if height % 2 != 0 or width % 2 != 0:
+        raise ValueError(f"Mosaic dimensions must be even, got {height}x{width}")
+    half_h, half_w = height // 2, width // 2
+    return {
+        "front": np.array(frame[:half_h, :half_w], copy=True),
+        "top": np.array(frame[:half_h, half_w:], copy=True),
+        "gripper": np.array(frame[half_h:, :half_w], copy=True),
+    }
+
+
+def concatenate_rollout_frames(chunks: Sequence[np.ndarray]) -> np.ndarray:
+    """Join decoded chunk frames, dropping repeated conditioning frames."""
+
+    if not chunks:
+        raise ValueError("At least one decoded frame chunk is required")
+    selected = []
+    for index, frames in enumerate(chunks):
+        if frames.ndim != 4 or frames.shape[-1] != 3 or frames.dtype != np.uint8:
+            raise ValueError(
+                f"Expected uint8 frames [T,H,W,3], got {frames.shape} {frames.dtype}"
+            )
+        selected.append(frames if index == 0 else frames[1:])
+    return np.concatenate(selected, axis=0)
+
+
+def run_policy_chunk(
+    policy_head: torch.nn.Module,
+    model_inputs: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        return policy_head.lazy_joint_video_action(
+            BatchFeature(data={}),
+            BatchFeature(data=model_inputs),
+        )
+
+
 def save_actions(actions: torch.Tensor, output_dir: str | Path) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -347,12 +403,14 @@ def write_metadata(
     output_dir: Path,
     args: argparse.Namespace,
     frame_count: int,
-    latent_shape: tuple[int, ...],
+    latent_shapes: Sequence[tuple[int, ...]],
     action_shape: tuple[int, ...],
     num_inference_steps: int,
+    chunk_count: int,
+    action_seeds: Sequence[int],
 ) -> Path:
     metadata: dict[str, Any] = {
-        "config": str(args.config.expanduser().resolve()),
+        "config": str(project_path(args.config)),
         "lora_weights": str(resolve_lora_path(args.lora_weights)),
         "input_image": str(args.image.expanduser().resolve()),
         "input_top_image": (
@@ -366,11 +424,15 @@ def write_metadata(
         "prompt": args.prompt,
         "input_joint_positions": dict(zip(JOINT_NAMES, args.joint_positions)),
         "action_seed": args.action_seed,
+        "action_seeds": list(action_seeds),
+        "chunk_count": chunk_count,
+        "actions_per_chunk": 24,
         "num_inference_steps": num_inference_steps,
         "action_shape": list(action_shape),
-        "video_latent_shape": list(latent_shape),
+        "video_latent_shapes": [list(shape) for shape in latent_shapes],
         "decoded_frame_count": frame_count,
         "frame_zero_includes_conditioning_image": True,
+        "subsequent_chunks_drop_conditioning_frame": True,
     }
     path = output_dir / "metadata.json"
     with path.open("w") as metadata_file:
@@ -393,6 +455,7 @@ def validate_cuda_device(device: torch.device) -> None:
 
 def main() -> None:
     args = parse_args()
+    validate_args(args)
     os.environ["ATTENTION_BACKEND"] = args.attention_backend
     os.environ.setdefault("ENABLE_TENSORRT", "False")
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -430,23 +493,49 @@ def main() -> None:
         action_seed=args.action_seed,
         compile_encoders=args.compile_encoders,
     )
-    model_inputs = move_model_inputs(cpu_batch, device)
-
-    print(
-        f"Running {policy_head.num_inference_steps} denoising steps for prompt: "
-        f"{args.prompt!r}"
-    )
-    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        prediction = policy_head.lazy_joint_video_action(
-            BatchFeature(data={}),
-            BatchFeature(data=model_inputs),
-        )
-
-    normalized_actions = prediction["action_pred"].float()
-    video_latents = prediction["video_pred"]
     action_q01, action_q99 = load_action_statistics(args.stats_path)
-    actions = denormalize_actions(normalized_actions, action_q01, action_q99)
-    frames = decode_video_frames(policy_head, video_latents)
+    action_chunks: list[torch.Tensor] = []
+    frame_chunks: list[np.ndarray] = []
+    latent_shapes: list[tuple[int, ...]] = []
+    action_seeds: list[int] = []
+
+    for chunk_index in range(args.num_chunks):
+        chunk_seed = args.action_seed + chunk_index
+        action_seeds.append(chunk_seed)
+        policy_head.seed = chunk_seed
+
+        model_inputs = move_model_inputs(cpu_batch, device)
+        print(
+            f"Running chunk {chunk_index + 1}/{args.num_chunks} with "
+            f"{policy_head.num_inference_steps} denoising steps for prompt: "
+            f"{args.prompt!r}"
+        )
+        prediction = run_policy_chunk(policy_head, model_inputs)
+
+        normalized_actions = prediction["action_pred"].float()
+        video_latents = prediction["video_pred"]
+        actions = denormalize_actions(normalized_actions, action_q01, action_q99)
+        frames = decode_video_frames(policy_head, video_latents)
+
+        action_chunks.append(actions)
+        frame_chunks.append(frames)
+        latent_shapes.append(tuple(video_latents.shape))
+
+        if chunk_index + 1 < args.num_chunks:
+            next_joint_positions = actions[-1].tolist()
+            next_camera_images = split_mosaic_frame(frames[-1])
+            cpu_batch = adapter.adapt(
+                images=next_camera_images,
+                prompt=args.prompt,
+                joint_positions=next_joint_positions,
+                action_noise_device="cpu",
+                action_seed=chunk_seed + 1,
+            )
+            del prediction, normalized_actions, video_latents, model_inputs
+            torch.cuda.empty_cache()
+
+    actions = torch.cat(action_chunks, dim=0)
+    frames = concatenate_rollout_frames(frame_chunks)
 
     print_actions(actions)
     actions_path = save_actions(actions, output_dir)
@@ -455,9 +544,11 @@ def main() -> None:
         output_dir=output_dir,
         args=args,
         frame_count=len(frame_paths),
-        latent_shape=tuple(video_latents.shape),
+        latent_shapes=latent_shapes,
         action_shape=tuple(actions.shape),
         num_inference_steps=policy_head.num_inference_steps,
+        chunk_count=args.num_chunks,
+        action_seeds=action_seeds,
     )
 
     video_path = output_dir / "predicted_video.mp4"
@@ -474,9 +565,10 @@ def main() -> None:
         print(f"Saved video: {video_path}")
     print(f"Saved metadata: {metadata_path}")
     print(
-        "Note: frame_000 is the returned conditioning mosaic; subsequent frames "
-        "are the generated continuation. Mosaic layout is front/top on the first "
-        "row and gripper/black on the second row."
+        "Note: frame_000 is the initial conditioning mosaic; subsequent chunk "
+        "conditioning frames are omitted from the saved sequence to avoid duplicate "
+        "frames. Mosaic layout is front/top on the first row and gripper/black on "
+        "the second row."
     )
 
 
