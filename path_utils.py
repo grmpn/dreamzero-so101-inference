@@ -48,6 +48,8 @@ def project_path(path: str | Path, *, base: Path = PROJECT_ROOT) -> Path:
     resolved = Path(path).expanduser()
     if resolved.is_absolute() and resolved.exists():
         return resolved.resolve()
+    if not resolved.is_absolute() and resolved.exists():
+        return resolved.resolve()
 
     normalized = str(path).replace("\\", "/")
     parts = [part for part in normalized.split("/") if part]
